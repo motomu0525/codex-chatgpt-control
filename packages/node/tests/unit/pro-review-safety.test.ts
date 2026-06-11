@@ -72,7 +72,7 @@ describe("ChatGPT Pro review safety primitives", () => {
   it("requires localized turn-off labels plus another signal before Temporary Chat is verified on", async () => {
     const result = await readTemporaryChatState({
       page: documentPage([
-        node({ label: "一時チャットをオフにする" })
+        node({ label: "一時チャットをオフにする", attributes: { "aria-label": "一時チャットをオフにする" } })
       ], {
         url: "https://chatgpt.com/?temporary-chat=true"
       })
@@ -87,7 +87,7 @@ describe("ChatGPT Pro review safety primitives", () => {
 
   it("verifies an empty temporary-chat URL when the turn-off control is visible", async () => {
     const page = documentPage([
-      node({ label: "一時チャットをオフにする" })
+      node({ label: "一時チャットをオフにする", attributes: { "aria-label": "一時チャットをオフにする" } })
     ], {
       url: "https://chatgpt.com/?temporary-chat=true",
       messages: []
@@ -129,6 +129,66 @@ describe("ChatGPT Pro review safety primitives", () => {
     });
   });
 
+  it("promotes an empty temporary-chat URL only when lightweight DOM text confirms Temporary Chat", async () => {
+    const result = await readTemporaryChatState({
+      page: documentPage([
+        node({ label: "このチャットは履歴に残らず、モデルのトレーニングにも使用されません。" })
+      ], {
+        url: "https://chatgpt.com/?temporary-chat=true",
+        messages: []
+      })
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.data).toMatchObject({
+      state: "on",
+      confidence: "verified",
+      evidence: expect.arrayContaining([
+        expect.objectContaining({ source: "url-param=temporary-chat=true" }),
+        expect.objectContaining({ source: "page-temporary-text" })
+      ])
+    });
+  });
+
+  it("does not promote an empty temporary-chat URL from a generic Temporary Chat label alone", async () => {
+    const result = await readTemporaryChatState({
+      page: documentPage([
+        node({ label: "一時チャット" })
+      ], {
+        url: "https://chatgpt.com/?temporary-chat=true",
+        messages: []
+      })
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.data).toMatchObject({
+      state: "on",
+      confidence: "assumed_from_url"
+    });
+  });
+
+  it("does not click a generic Temporary Chat aria-label on an empty temporary-chat URL", async () => {
+    let clicks = 0;
+    const page = documentPage([
+      node({ label: "Temporary chat", attributes: { "aria-label": "Temporary chat" } })
+    ], {
+      url: "https://chatgpt.com/?temporary-chat=true",
+      messages: [],
+      onClick: () => {
+        clicks += 1;
+      }
+    });
+
+    const result = await ensureTemporaryChatOn({ page });
+
+    expect(result.ok).toBe(false);
+    expect(result.blocker).toMatchObject({
+      kind: "verification_policy",
+      code: "temporary_chat_not_verified"
+    });
+    expect(clicks).toBe(0);
+  });
+
   it("treats Temporary Chat URL plus an empty thread as assumed but not verified", async () => {
     const page = documentPage([], {
       url: "https://chatgpt.com/?temporary-chat=true"
@@ -146,7 +206,18 @@ describe("ChatGPT Pro review safety primitives", () => {
     const asserted = await assertTemporaryChatVerifiedOn({ page });
     expect(asserted.ok).toBe(false);
     expect(asserted.blocker).toMatchObject({
+      kind: "verification_policy",
       code: "temporary_chat_not_verified"
+    });
+    expect(asserted.blocker?.diagnostics?.temporary).toMatchObject({
+      urlTemporaryParam: true,
+      turnCount: 0,
+      assistantTurnCount: 0,
+      selectorTurnOffCount: 0,
+      selectorTurnOnCount: 0,
+      evaluateCandidatesCount: 0,
+      confidence: "assumed_from_url",
+      reason: "url_empty_chat_without_dom_signal"
     });
   });
 
@@ -358,7 +429,7 @@ function node(options: TestNodeOptions): HTMLElement {
 
 function documentPage(
   nodes: HTMLElement[],
-  options: { url?: string; bodyText?: string; textboxText?: string; messages?: HTMLElement[] } = {}
+  options: { url?: string; bodyText?: string; textboxText?: string; messages?: HTMLElement[]; onClick?: () => void } = {}
 ): PageLike {
   return {
     url: () => options.url ?? "https://chatgpt.com/",
@@ -371,7 +442,7 @@ function documentPage(
         globalThis.document = {
           body: { innerText: options.bodyText ?? "New chat Search chats Chat with ChatGPT" },
           location: { href: options.url ?? "https://chatgpt.com/" },
-          querySelectorAll: (selector: string) => selector.includes("[data-message-author-role]")
+          querySelectorAll: (selector: string) => selector.includes("[data-message-author-role")
             ? options.messages ?? []
             : nodes
         } as unknown as Document;
@@ -386,7 +457,7 @@ function documentPage(
 
 function testLocator(
   nodes: HTMLElement[],
-  options: { textboxText?: string },
+  options: { textboxText?: string; onClick?: () => void },
   selector?: string
 ): LocatorLike {
   const selected = selector?.includes("aria-label=")
@@ -394,7 +465,7 @@ function testLocator(
     : nodes;
   return {
     count: async () => selected.length,
-    click: async () => {},
+    click: async () => { options.onClick?.(); },
     isVisible: async () => selected.length > 0,
     evaluate: async fn => fn((selected[0] ?? node({ label: "" })) as unknown as Element),
     innerText: async () => options.textboxText ?? "",

@@ -1,4 +1,4 @@
-import type { BlockerKind, CommandContext, CommandResult, ExistingTabDiagnostics } from "../types.js";
+import type { BlockerKind, CommandContext, CommandResult, ExistingTabDiagnostics, TemporaryChatDiagnostics } from "../types.js";
 import { augmentCommandBlocker, resumeDecisionForBlocker, type ResumeDecision } from "../runner/resume.js";
 
 type RemediationStep = NonNullable<NonNullable<CommandResult["blocker"]>["remediation"]>[number];
@@ -48,6 +48,7 @@ export type BlockerExplanation = {
   };
   diagnostics?: {
     existingTab?: ExistingTabDiagnostics;
+    temporary?: TemporaryChatDiagnostics;
   };
   nextCommands: string[];
   markdown: string;
@@ -120,6 +121,13 @@ const PROFILES: Record<BlockerKind, BlockerProfile> = {
     severity: "action_required",
     userActionRequired: true,
     defaultRetryReason: "Retry only after the user approves the exact bounded action."
+  },
+  verification_policy: {
+    title: "Verification policy",
+    category: "runtime",
+    severity: "blocked",
+    userActionRequired: false,
+    defaultRetryReason: "Do not retry blindly; inspect the verification diagnostics and retry only after verified UI evidence is available."
   },
   selector_drift: {
     title: "Selector drift",
@@ -375,6 +383,22 @@ function renderMarkdown(explanation: Omit<BlockerExplanation, "markdown">): stri
     lines.push(`- ChatGPT tabs seen: \`${existingTab.chatgptTabCount}\``);
     for (const tab of existingTab.candidateTabs) {
       lines.push(`- Candidate tab ${tab.id}: ${tab.title ?? "Untitled"} - ${tab.url ?? "unknown URL"}`);
+    }
+  }
+
+  const temporary = explanation.diagnostics?.temporary;
+  if (temporary !== undefined) {
+    lines.push("", "Temporary Chat diagnostics:");
+    lines.push(`- URL temporary parameter: \`${temporary.urlTemporaryParam ? "present" : "absent"}\``);
+    if (temporary.turnCount !== undefined) lines.push(`- Turns: \`${temporary.turnCount}\``);
+    if (temporary.assistantTurnCount !== undefined) lines.push(`- Assistant turns: \`${temporary.assistantTurnCount}\``);
+    lines.push(`- Selector turn-off candidates: \`${temporary.selectorTurnOffCount}\``);
+    lines.push(`- Selector turn-on candidates: \`${temporary.selectorTurnOnCount}\``);
+    lines.push(`- Evaluate candidates: \`${temporary.evaluateCandidatesCount}\``);
+    if (temporary.confidence !== undefined) lines.push(`- Confidence: \`${temporary.confidence}\``);
+    if (temporary.reason !== undefined) lines.push(`- Reason: \`${temporary.reason}\``);
+    if ((temporary.driftSnapshot?.length ?? 0) > 0) {
+      lines.push("- Drift snapshot: present");
     }
   }
 

@@ -16,6 +16,7 @@ export type BlockerKind =
   | "modal"
   | "permission"
   | "confirmation"
+  | "verification_policy"
   | "selector_drift"
   | "artifact_unavailable"
   | "artifact_selector_drift"
@@ -104,6 +105,7 @@ export type CommandResult<T = unknown> = {
     }>;
     diagnostics?: {
       existingTab?: ExistingTabDiagnostics;
+      temporary?: TemporaryChatDiagnostics;
     };
     resumable?: boolean;
   };
@@ -589,10 +591,30 @@ export type TemporaryChatEvidence = {
   source: string;
 };
 
+export type TemporaryDriftSnapshotEntry = {
+  ariaLabel?: string;
+  dataTestId?: string;
+  role?: string;
+  title?: string;
+  text?: string;
+};
+
+export type TemporaryChatDiagnostics = {
+  urlTemporaryParam: boolean;
+  turnCount?: number;
+  assistantTurnCount?: number;
+  selectorTurnOffCount: number;
+  selectorTurnOnCount: number;
+  evaluateCandidatesCount: number;
+  confidence?: "verified" | "assumed_from_url";
+  reason?: string;
+  driftSnapshot?: TemporaryDriftSnapshotEntry[];
+};
+
 export type TemporaryChatData =
-  | { state: "on"; confidence: "verified" | "assumed_from_url"; evidence: TemporaryChatEvidence[]; candidates: string[] }
-  | { state: "off"; evidence: TemporaryChatEvidence[]; candidates: string[] }
-  | { state: "unknown"; evidence: TemporaryChatEvidence[]; candidates: string[] };
+  | { state: "on"; confidence: "verified" | "assumed_from_url"; evidence: TemporaryChatEvidence[]; candidates: string[]; diagnostics?: TemporaryChatDiagnostics }
+  | { state: "off"; evidence: TemporaryChatEvidence[]; candidates: string[]; diagnostics?: TemporaryChatDiagnostics }
+  | { state: "unknown"; evidence: TemporaryChatEvidence[]; candidates: string[]; diagnostics?: TemporaryChatDiagnostics };
 
 export type InspectComposerArgs = {
   expectedText?: string;

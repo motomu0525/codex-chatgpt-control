@@ -1,5 +1,14 @@
 import { resultOk } from "../errors.js";
-import type { CommandResult, PageLike, RuntimeEnv, TemporaryChatData, TemporaryChatEvidence } from "../types.js";
+import type {
+  CommandContext,
+  CommandResult,
+  PageLike,
+  RuntimeEnv,
+  TemporaryChatData,
+  TemporaryChatDiagnostics,
+  TemporaryChatEvidence,
+  TemporaryDriftSnapshotEntry
+} from "../types.js";
 import { withTimeout } from "../browser/evaluate.js";
 import { contextFromPage } from "./context.js";
 import { bootstrap } from "./session.js";
@@ -8,13 +17,14 @@ type TemporaryCandidate = {
   label: string;
   onEvidence: TemporaryChatEvidence[];
   offEvidence: TemporaryChatEvidence[];
+  source: "selector" | "evaluate";
+  kind: "turn-off" | "turn-on" | "unknown";
 };
 
 const TEMPORARY_TURN_ON_LABELS = [
   "一時チャットをオンにする",
   "Turn on temporary chat",
-  "Turn on Temporary Chat",
-  "Temporary chat"
+  "Turn on Temporary Chat"
 ];
 
 const TEMPORARY_TURN_OFF_LABELS = [
@@ -30,12 +40,30 @@ export async function readTemporaryChatState(env: RuntimeEnv): Promise<CommandRe
   }
 
   const page = env.page!;
-  const candidates = await readTemporaryCandidates(page);
-  const labels = candidates.map(candidate => candidate.label);
-  const evidence = candidates.flatMap(candidate => [...candidate.onEvidence, ...candidate.offEvidence]);
   const context = await contextFromPage(page);
+  const emptyTemporaryUrl = isTemporaryUrlEmptyChat(context.url, context.turnCount, context.assistantTurnCount);
 
-  if (candidates.length === 0 && isTemporaryUrlEmptyChat(context.url, context.turnCount, context.assistantTurnCount)) {
+  if (emptyTemporaryUrl) {
+    const selectorCandidates = await readTemporaryCandidatesBySelectors(page);
+    if (selectorCandidates.length > 0) {
+      return resultFromCandidates(selectorCandidates, context);
+    }
+
+    const textEvidence = await readTemporaryPageTextEvidence(page);
+    if (textEvidence !== undefined) {
+      const evidence = [
+        { label: "Temporary Chat URL parameter", source: "url-param=temporary-chat=true" },
+        textEvidence
+      ];
+      return resultOk({
+        state: "on",
+        confidence: "verified",
+        evidence,
+        candidates: [],
+        diagnostics: temporaryDiagnostics(context, [], "verified")
+      }, context);
+    }
+
     const urlEvidence = [
       { label: "Temporary Chat URL parameter", source: "url-param=temporary-chat=true" },
       { label: "Empty ChatGPT thread", source: "empty-chat" }
@@ -44,29 +72,41 @@ export async function readTemporaryChatState(env: RuntimeEnv): Promise<CommandRe
       state: "on",
       confidence: "assumed_from_url",
       evidence: urlEvidence,
-      candidates: labels
+      candidates: [],
+      diagnostics: temporaryDiagnostics(context, [], "assumed_from_url", "url_empty_chat_without_dom_signal")
     }, context);
   }
 
+  const candidates = await readTemporaryCandidates(page);
+  return resultFromCandidates(candidates, context);
+}
+
+function resultFromCandidates(candidates: TemporaryCandidate[], context: CommandContext): CommandResult<TemporaryChatData> {
+  const labels = candidates.map(candidate => candidate.label);
+  const evidence = candidates.flatMap(candidate => [...candidate.onEvidence, ...candidate.offEvidence]);
+  const baseDiagnostics = temporaryDiagnostics(context, candidates);
+
   if (candidates.length !== 1) {
-    return resultOk({ state: "unknown", evidence, candidates: labels }, context);
+    return resultOk({ state: "unknown", evidence, candidates: labels, diagnostics: baseDiagnostics }, context);
   }
 
   const candidate = candidates[0]!;
   if (candidate.onEvidence.length >= 2) {
+    const diagnostics = temporaryDiagnostics(context, candidates, "verified");
     return resultOk({
       state: "on",
       confidence: "verified",
       evidence: candidate.onEvidence,
-      candidates: labels
+      candidates: labels,
+      diagnostics
     }, context);
   }
 
   if (candidate.offEvidence.length > 0 && candidate.onEvidence.length === 0) {
-    return resultOk({ state: "off", evidence: candidate.offEvidence, candidates: labels }, context);
+    return resultOk({ state: "off", evidence: candidate.offEvidence, candidates: labels, diagnostics: baseDiagnostics }, context);
   }
 
-  return resultOk({ state: "unknown", evidence, candidates: labels }, context);
+  return resultOk({ state: "unknown", evidence, candidates: labels, diagnostics: baseDiagnostics }, context);
 }
 
 function isTemporaryUrlEmptyChat(url: string | undefined, turnCount: number | undefined, assistantTurnCount: number | undefined): boolean {
@@ -74,6 +114,24 @@ function isTemporaryUrlEmptyChat(url: string | undefined, turnCount: number | un
     && /[?&]temporary-chat=true\b/i.test(url)
     && turnCount === 0
     && assistantTurnCount === 0;
+}
+
+function temporaryDiagnostics(
+  context: CommandContext,
+  candidates: TemporaryCandidate[],
+  confidence?: "verified" | "assumed_from_url",
+  reason?: string
+): TemporaryChatDiagnostics {
+  return {
+    urlTemporaryParam: typeof context.url === "string" && /[?&]temporary-chat=true\b/i.test(context.url),
+    ...(context.turnCount !== undefined ? { turnCount: context.turnCount } : {}),
+    ...(context.assistantTurnCount !== undefined ? { assistantTurnCount: context.assistantTurnCount } : {}),
+    selectorTurnOffCount: candidates.filter(candidate => candidate.source === "selector" && candidate.kind === "turn-off").length,
+    selectorTurnOnCount: candidates.filter(candidate => candidate.source === "selector" && candidate.kind === "turn-on").length,
+    evaluateCandidatesCount: candidates.filter(candidate => candidate.source === "evaluate").length,
+    ...(confidence !== undefined ? { confidence } : {}),
+    ...(reason !== undefined ? { reason } : {})
+  };
 }
 
 export async function ensureTemporaryChatOn(env: RuntimeEnv): Promise<CommandResult<TemporaryChatData>> {
@@ -179,10 +237,41 @@ async function readTemporaryCandidates(page: PageLike): Promise<TemporaryCandida
           offEvidence.push(sourceEvidence(label, "input.checked=false"));
         }
 
-        return { label, onEvidence, offEvidence };
+        const kind = labelMeansTurnOff ? "turn-off" : labelMeansTurnOn ? "turn-on" : "unknown";
+        return { label, onEvidence, offEvidence, source: "evaluate", kind };
       })
       .filter((value): value is TemporaryCandidate => value !== undefined);
   }), 3000, "Timed out reading Temporary Chat state.").catch(() => []);
+}
+
+async function readTemporaryPageTextEvidence(page: PageLike): Promise<TemporaryChatEvidence | undefined> {
+  if (typeof page.evaluate !== "function") {
+    return undefined;
+  }
+
+  return withTimeout(page.evaluate(() => {
+    const textPatterns = [
+      /won['’]?t appear in history/i,
+      /will not appear in history/i,
+      /won['’]?t be saved/i,
+      /will not be saved/i,
+      /履歴に残ら/,
+      /履歴には表示され/,
+      /保存されません/
+    ];
+    const normalize = (value: string | null | undefined) => (value ?? "").replace(/\s+/g, " ").trim();
+    const selectors = "h1, h2, h3, p, [role='heading'], [data-testid]";
+    for (const element of Array.from(document.querySelectorAll(selectors)).slice(0, 60)) {
+      const htmlElement = element as HTMLElement;
+      const text = normalize(htmlElement.textContent);
+      const testId = normalize(htmlElement.getAttribute("data-testid"));
+      const matchedText = [text, testId].find(value => value.length > 0 && textPatterns.some(pattern => pattern.test(value)));
+      if (matchedText !== undefined) {
+        return { label: "Temporary Chat page text", source: "page-temporary-text" };
+      }
+    }
+    return undefined;
+  }), 1200, "Timed out reading lightweight Temporary Chat text.").catch(() => undefined);
 }
 
 async function clickTemporaryCandidate(page: PageLike): Promise<boolean> {
@@ -235,7 +324,7 @@ async function readTemporaryCandidatesBySelectors(page: PageLike): Promise<Tempo
     if (temporaryUrlOn) {
       onEvidence.push({ label, source: "url-param=temporary-chat=true" });
     }
-    candidates.push({ label, onEvidence, offEvidence: [] });
+    candidates.push({ label, onEvidence, offEvidence: [], source: "selector", kind: "turn-off" });
   }
 
   const turnOnLocator = page.locator(ariaButtonSelector(TEMPORARY_TURN_ON_LABELS));
@@ -244,7 +333,9 @@ async function readTemporaryCandidatesBySelectors(page: PageLike): Promise<Tempo
     candidates.push({
       label,
       onEvidence: [],
-      offEvidence: [{ label, source: "label-action=turn-on" }]
+      offEvidence: [{ label, source: "label-action=turn-on" }],
+      source: "selector",
+      kind: "turn-on"
     });
   }
 
@@ -288,22 +379,69 @@ async function temporaryBlocker(
   message: string,
   data: TemporaryChatData | undefined
 ): Promise<CommandResult<TemporaryChatData>> {
+  const context = await contextFromPage(page);
+  const assumedFromUrl = data?.state === "on" && data.confidence === "assumed_from_url";
+  const temporaryDiagnostics = data?.diagnostics === undefined ? undefined : { ...data.diagnostics };
+  if (temporaryDiagnostics !== undefined && (data?.candidates.length ?? 0) === 0) {
+    const driftSnapshot = await readButtonDriftSnapshot(page);
+    if (driftSnapshot.length > 0) {
+      temporaryDiagnostics.driftSnapshot = driftSnapshot;
+    }
+  }
+
   const blocker: NonNullable<CommandResult["blocker"]> = {
-    kind: "selector_drift",
+    kind: assumedFromUrl ? "verification_policy" : "selector_drift",
     code: "temporary_chat_not_verified",
     message,
     resumable: true
   };
   const candidates = data?.candidates.map(label => ({ label }));
   if (candidates !== undefined) blocker.candidates = candidates;
+  if (temporaryDiagnostics !== undefined) {
+    blocker.diagnostics = { temporary: temporaryDiagnostics };
+  }
 
   const result: CommandResult<TemporaryChatData> = {
     ok: false,
     status: "blocked",
     warnings: [],
     blocker,
-    context: await contextFromPage(page)
+    context
   };
   if (data !== undefined) result.data = data;
   return result;
+}
+
+async function readButtonDriftSnapshot(page: PageLike | undefined): Promise<TemporaryDriftSnapshotEntry[]> {
+  if (typeof page?.evaluate !== "function") {
+    return [];
+  }
+
+  return withTimeout(page.evaluate(() => {
+    const normalize = (value: string | null | undefined) => (value ?? "").replace(/\s+/g, " ").trim();
+    return Array.from(document.querySelectorAll("button, [role='button'], [role='switch'], [role='checkbox']"))
+      .slice(0, 25)
+      .map(node => {
+        const element = node as HTMLElement;
+        const entry: {
+          ariaLabel?: string;
+          dataTestId?: string;
+          role?: string;
+          title?: string;
+          text?: string;
+        } = {};
+        const ariaLabel = normalize(element.getAttribute("aria-label"));
+        const dataTestId = normalize(element.getAttribute("data-testid"));
+        const role = normalize(element.getAttribute("role"));
+        const title = normalize(element.getAttribute("title"));
+        const text = normalize(element.innerText || element.textContent).slice(0, 80);
+        if (ariaLabel.length > 0) entry.ariaLabel = ariaLabel;
+        if (dataTestId.length > 0) entry.dataTestId = dataTestId;
+        if (role.length > 0) entry.role = role;
+        if (title.length > 0) entry.title = title;
+        if (text.length > 0) entry.text = text;
+        return entry;
+      })
+      .filter(entry => Object.keys(entry).length > 0);
+  }), 1200, "Timed out reading Temporary Chat drift snapshot.").catch(() => []);
 }

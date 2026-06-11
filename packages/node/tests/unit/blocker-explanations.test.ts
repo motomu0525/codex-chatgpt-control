@@ -21,6 +21,7 @@ const blockerKinds: BlockerKind[] = [
   "modal",
   "permission",
   "confirmation",
+  "verification_policy",
   "selector_drift",
   "artifact_unavailable",
   "artifact_selector_drift",
@@ -186,6 +187,32 @@ describe("blocker explanations", () => {
     expect(explanation.resume.supported).toBe(false);
     expect(explanation.nextCommands).toEqual([]);
     expect(explanation.markdown).toContain("Recherche approfondie");
+  });
+
+  it("renders Temporary Chat verification diagnostics without chat content", () => {
+    const explanation = explainCommandBlocker({
+      kind: "verification_policy",
+      code: "temporary_chat_not_verified",
+      message: "Temporary Chat state is inferred from URL but not verified on.",
+      diagnostics: {
+        temporary: {
+          urlTemporaryParam: true,
+          turnCount: 0,
+          assistantTurnCount: 0,
+          selectorTurnOffCount: 0,
+          selectorTurnOnCount: 0,
+          evaluateCandidatesCount: 0,
+          confidence: "assumed_from_url",
+          reason: "url_empty_chat_without_dom_signal"
+        }
+      },
+      resumable: true
+    }, { command: "temporary.ensureOn" });
+
+    expect(explanation.category).toBe("runtime");
+    expect(explanation.resume.supported).toBe(false);
+    expect(explanation.markdown).toContain("Temporary Chat diagnostics");
+    expect(explanation.markdown).toContain("url_empty_chat_without_dom_signal");
   });
 
   it("keeps ordinary-shell and live-bootstrap bridge remediation distinct", () => {

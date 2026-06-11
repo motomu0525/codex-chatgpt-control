@@ -53,6 +53,13 @@
         "userActionRequired": true
       },
       {
+        "category": "runtime",
+        "kind": "verification_policy",
+        "severity": "blocked",
+        "title": "Verification policy",
+        "userActionRequired": false
+      },
+      {
         "category": "ui_drift",
         "kind": "selector_drift",
         "severity": "blocked",
