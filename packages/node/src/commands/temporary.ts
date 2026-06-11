@@ -30,12 +30,8 @@ export async function readTemporaryChatState(env: RuntimeEnv): Promise<CommandRe
   }
 
   const page = env.page!;
-  const candidates = await readTemporaryCandidates(page);
-  const labels = candidates.map(candidate => candidate.label);
-  const evidence = candidates.flatMap(candidate => [...candidate.onEvidence, ...candidate.offEvidence]);
   const context = await contextFromPage(page);
-
-  if (candidates.length === 0 && isTemporaryUrlEmptyChat(context.url, context.turnCount, context.assistantTurnCount)) {
+  if (isTemporaryUrlEmptyChat(context.url, context.turnCount, context.assistantTurnCount)) {
     const urlEvidence = [
       { label: "Temporary Chat URL parameter", source: "url-param=temporary-chat=true" },
       { label: "Empty ChatGPT thread", source: "empty-chat" }
@@ -44,9 +40,13 @@ export async function readTemporaryChatState(env: RuntimeEnv): Promise<CommandRe
       state: "on",
       confidence: "assumed_from_url",
       evidence: urlEvidence,
-      candidates: labels
+      candidates: []
     }, context);
   }
+
+  const candidates = await readTemporaryCandidates(page);
+  const labels = candidates.map(candidate => candidate.label);
+  const evidence = candidates.flatMap(candidate => [...candidate.onEvidence, ...candidate.offEvidence]);
 
   if (candidates.length !== 1) {
     return resultOk({ state: "unknown", evidence, candidates: labels }, context);
