@@ -8,7 +8,7 @@ import { assertSafeToSubmit } from "../../src/commands/guards.js";
 import { assertChatGPTHost } from "../../src/commands/session.js";
 import { inspectComposer } from "../../src/commands/messages.js";
 import { normalizePromptForHash } from "../../src/dom/visible-text.js";
-import { assertTemporaryChatVerifiedOn, readTemporaryChatState } from "../../src/commands/temporary.js";
+import { assertTemporaryChatVerifiedOn, ensureTemporaryChatOn, readTemporaryChatState } from "../../src/commands/temporary.js";
 import { verifyAttachedFiles } from "../../src/commands/files.js";
 import type { LocatorLike, PageLike } from "../../src/types.js";
 
@@ -76,6 +76,50 @@ describe("ChatGPT Pro review safety primitives", () => {
       ], {
         url: "https://chatgpt.com/?temporary-chat=true"
       })
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.data).toMatchObject({
+      state: "on",
+      confidence: "verified"
+    });
+  });
+
+  it("verifies an empty temporary-chat URL when the turn-off control is visible", async () => {
+    const page = documentPage([
+      node({ label: "一時チャットをオフにする" })
+    ], {
+      url: "https://chatgpt.com/?temporary-chat=true",
+      messages: []
+    });
+
+    const state = await readTemporaryChatState({ page });
+    expect(state.ok).toBe(true);
+    expect(state.data).toMatchObject({
+      state: "on",
+      confidence: "verified"
+    });
+
+    const ensured = await ensureTemporaryChatOn({ page });
+    expect(ensured.ok).toBe(true);
+    expect(ensured.data).toMatchObject({
+      state: "on",
+      confidence: "verified"
+    });
+
+    const asserted = await assertTemporaryChatVerifiedOn({ page });
+    expect(asserted.ok).toBe(true);
+    expect(asserted.data).toMatchObject({
+      state: "on",
+      confidence: "verified"
+    });
+  });
+
+  it("does not block ensureTemporaryChatOn for a verified Temporary Chat control", async () => {
+    const result = await ensureTemporaryChatOn({
+      page: documentPage([
+        node({ label: "Temporary chat", attributes: { "aria-pressed": "true", "aria-checked": "true" } })
+      ])
     });
 
     expect(result.ok).toBe(true);
@@ -314,7 +358,7 @@ function node(options: TestNodeOptions): HTMLElement {
 
 function documentPage(
   nodes: HTMLElement[],
-  options: { url?: string; bodyText?: string; textboxText?: string } = {}
+  options: { url?: string; bodyText?: string; textboxText?: string; messages?: HTMLElement[] } = {}
 ): PageLike {
   return {
     url: () => options.url ?? "https://chatgpt.com/",
@@ -327,7 +371,9 @@ function documentPage(
         globalThis.document = {
           body: { innerText: options.bodyText ?? "New chat Search chats Chat with ChatGPT" },
           location: { href: options.url ?? "https://chatgpt.com/" },
-          querySelectorAll: () => nodes
+          querySelectorAll: (selector: string) => selector.includes("[data-message-author-role]")
+            ? options.messages ?? []
+            : nodes
         } as unknown as Document;
         return await fn(arg as A);
       } finally {
