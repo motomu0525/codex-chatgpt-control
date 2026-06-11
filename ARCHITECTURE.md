@@ -25,7 +25,7 @@ The guarded Pro review flow is intentionally split into small steps:
 9. Inspect the composer and run the safe-submit guard.
 10. In dry-run mode, stop before sending. In submit mode, click the unique send button, wait for an assistant response to stabilize and for the latest assistant turn to expose its own Copy response action, then copy the answer through ChatGPT's visible Copy response button.
 11. Capture the returned Pro answer as clipboard Markdown. Browser tab clipboard is preferred so the workflow does not need foreground OS clipboard control; system clipboard and DOM extraction are fallbacks.
-12. Save the answer Markdown, a sibling metadata file, a run ledger, a run-local `state.json`, and a prepared return prompt so the Codex caller can verify status/source/hash before using or returning the answer. If Codex is interrupted after submit, recovery must reopen the saved tab/conversation target and verify the visible run marker before copying the latest assistant answer.
+12. Save the answer Markdown and metadata in the run-local `.pro-review-runs/<runId>/` directory, along with a run ledger, `state.json`, and a prepared return prompt so the Codex caller can verify status/source/hash before using or returning the answer. If Codex is interrupted after submit, recovery must reopen the saved tab/conversation target and verify the visible run marker before copying the latest assistant answer.
 
 `messages.ask` is not used for this safety-critical flow because it combines compose and submit. The flow uses `compose -> inspect -> guard -> submit preflight -> submit -> wait -> copy`.
 
@@ -70,16 +70,18 @@ No 1Password, SOPS, age, or plaintext secret cache is required for the v1 guarde
 - Temporary Chat must be verified on before any automatic Pro review submission.
 - If Temporary Chat, attachment state, prompt text, host, login state, or send button state is ambiguous, the workflow returns a structured blocker and does not submit.
 - Visible UI reads are bounded with short timeouts where practical. If the browser bridge, DOM read, or locator count does not return reliably, the workflow must fail closed instead of waiting indefinitely or guessing state.
+- Timeout wrappers observe late rejections from the underlying browser operation so a timed-out Chrome bridge call does not become an unhandled rejection in the Node host after the safe timeout path has already returned.
 - Sequence execution enforces per-step timeouts. Pro review uses a shorter default step timeout so live smoke checks can return a structured timeout before the host tool call is killed.
 - Live verification must not fall back to OS-level cursor control, taskbar clicks, or foreground-window stealing. If the Chrome bridge cannot provide the needed state, stop with a blocker and leave the user's desktop interaction alone.
 - Pro review starts from a newly created ChatGPT tab by default. It must not claim or overwrite the user's already-open ChatGPT tab unless the workflow is explicitly changed to an existing-tab mode.
+- The outer Codex bridge helper may retry a transport-class failure once only when its run journal proves no `submit_start` occurred; once submission is started or uncertain, it must recover from the same state/tab instead of resending.
 - Automatic submission requires an explicit `autoSubmit: true` request and the same guard checks used by dry-run.
 - Pro review attachments must be `.zip` files, non-empty, no larger than 100 MB, and have a basic ZIP signature before upload is attempted.
 - Attachment SHA-256 and byte counts are local source metadata. The visible ChatGPT UI can confirm the attachment name and absence of extra visible attachments, but it cannot prove that ChatGPT received identical bytes.
 - Attachment verification normalizes delete-button labels such as `ファイル 1 を削除：review.zip` and invisible label characters so the delete affordance is not treated as a second attachment.
 - Composer prompt verification hashes a normalized prompt form that removes blank-only lines and trailing line whitespace. This preserves non-empty line content and order while tolerating extra blank lines inserted by ChatGPT's composer DOM for long Markdown prompts.
 - ChatGPT output is returned as review input for Codex; executing suggested changes is a separate decision.
-- The bridge does not paste the Pro answer into the Codex Desktop UI. It saves the answer to the current run's output file and prepares a return prompt tied to the detected Codex thread id when available.
+- The bridge does not paste the Pro answer into the Codex Desktop UI. It saves the answer to the current run's run-local output file and prepares a return prompt tied to the detected Codex thread id when available.
 - `CODEX_THREAD_ID` is treated as an origin hint, not a complete proof of safe return. Returning to Codex requires `runId`, prompt hash, ZIP hash, answer hash, git metadata, a local ledger, target-thread validation, and duplicate-send prevention.
 - Return ledger schema v2 is a state machine. Phase 1-3 writes and consumes `return_prompt_prepared`, `blocked`, and `current_thread_consumed`; the guarded cross-thread path uses `send_reserved`, `turn_started`, and `marker_observed`; later terminal states such as `completed`, `duplicate_detected`, `failed_retryable`, and `failed_terminal` remain reserved for fuller retry/repair workflows. Validators must verify ledger routing/hash fields against metadata, not only the ledger state string.
 - Cross-thread Codex return is not default-enabled in v1. The implemented cross-thread support is preflight plus local ledger gating over caller-provided `thread/read` snapshots; actual sending must remain an explicit injected outer action followed by readback confirmation.

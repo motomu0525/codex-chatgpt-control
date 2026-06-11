@@ -174,9 +174,11 @@ async function finalizeBrowserTabs(browser: LiveSmokeBrowser | undefined): Promi
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
   let timeout: ReturnType<typeof setTimeout> | undefined;
+  const observedPromise = Promise.resolve(promise);
+  observedPromise.catch(() => {});
   try {
     return await Promise.race([
-      promise,
+      observedPromise,
       new Promise<never>((_, reject) => {
         timeout = setTimeout(() => reject(new Error(message)), timeoutMs);
       })

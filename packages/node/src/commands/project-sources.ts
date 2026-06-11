@@ -573,8 +573,10 @@ async function raceFileChooserOpen(
   page: PageLike,
   waitMs: number
 ): Promise<boolean> {
+  const observedChooser = Promise.resolve(chooserPromise);
+  observedChooser.catch(() => {});
   return Promise.race([
-    chooserPromise.then(() => true, () => false),
+    observedChooser.then(() => true, () => false),
     (page.waitForTimeout?.(waitMs) ?? new Promise(resolve => setTimeout(resolve, waitMs))).then(() => false)
   ]);
 }

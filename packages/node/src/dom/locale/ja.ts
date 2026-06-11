@@ -12,7 +12,7 @@ import type { LocaleContribution } from "./types.js";
  */
 export const ja = {
   composerTextbox: ["ChatGPT とチャットする"],
-  sendButton: ["プロンプトを送信する"],
+  sendButton: ["プロンプトを送信する", "送信", "メッセージを送信する"],
   searchChatsButton: ["チャットを検索"],
   searchChatsPlaceholder: ["チャットを検索..."],
   newChat: ["新しいチャット"],

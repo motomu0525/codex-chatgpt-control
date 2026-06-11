@@ -241,6 +241,47 @@ describe("extractMessagesFromHtml", () => {
     expect(result.data?.sendButtonCount).toBe(0);
   });
 
+  it("uses DOM send button state when localized role matching is ambiguous", async () => {
+    const textbox: LocatorLike = {
+      innerText: async () => "ready prompt",
+      textContent: async () => "ready prompt"
+    };
+    const send: LocatorLike = {
+      count: async () => 2
+    };
+    const page: PageLike = {
+      getByRole: (role: string) => role === "textbox" ? textbox : send,
+      evaluate: async <T, A = unknown>(fn: (arg: A) => T | Promise<T>, arg?: A): Promise<T> => {
+        const source = String(fn);
+        if (source.includes("querySelectorAll")) {
+          return {
+            available: true,
+            count: 1,
+            visible: true,
+            disabled: false,
+            busy: false,
+            label: "メッセージを送信する"
+          } as T;
+        }
+        if (source.includes("document.body?.innerText")) {
+          return "" as T;
+        }
+        return await fn(arg as A);
+      },
+      waitForTimeout: async () => {},
+      title: async () => "ChatGPT",
+      url: async () => "https://chatgpt.com/?temporary-chat=true"
+    };
+
+    const result = await inspectComposer({ page }, {
+      expectedSha256: sha256Prompt("ready prompt")
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.data?.sendButtonCount).toBe(1);
+    expect(result.data?.sendButtonEnabled).toBe(true);
+  });
+
   it("blocks composer inspection when send button state cannot be read", async () => {
     const page = composerInspectionPage({
       send: {

@@ -4,9 +4,11 @@ export async function withTimeout<T>(
   message: string
 ): Promise<T> {
   let timeout: NodeJS.Timeout | undefined;
+  const observedPromise = Promise.resolve(promise);
+  observedPromise.catch(() => {});
   try {
     return await Promise.race([
-      promise,
+      observedPromise,
       new Promise<T>((_resolve, reject) => {
         timeout = setTimeout(() => reject(new Error(message)), Math.max(0, timeoutMs));
       })

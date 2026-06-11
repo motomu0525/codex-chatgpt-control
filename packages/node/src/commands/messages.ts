@@ -453,6 +453,8 @@ async function readSendButtonState(page: PageLike): Promise<SendButtonState> {
     return { available: false, reason: "unreadable:count_missing" };
   }
   if (count !== 1) {
+    const domState = await readSendButtonStateFromDom(page);
+    if (domState !== undefined && isSendButtonReady(domState)) return domState;
     return { available: false, count, reason: count === 0 ? "not_found" : "not_unique" };
   }
   const visible = typeof locator.isVisible === "function" ? await locator.isVisible({ timeoutMs: 500 }).catch(() => undefined) : undefined;
