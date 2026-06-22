@@ -49,6 +49,23 @@ export type LatestMessageTextSnapshot = {
   turnCount: number;
 };
 
+const MESSAGE_EVALUATE_TIMEOUT_MS = 5_000;
+
+async function withMessageEvaluateTimeout<T>(promise: Promise<T>): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  promise.catch(() => {});
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_resolve, reject) => {
+        timeout = setTimeout(() => reject(new Error("Message DOM evaluate timed out.")), MESSAGE_EVALUATE_TIMEOUT_MS);
+      })
+    ]);
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
+  }
+}
+
 export function extractMessagesFromHtml(html: string, args: ReadMessagesArgs = {}): ExtractedMessage[] {
   return extractRoleMessageHtml(html)
     .filter(message => args.role === undefined || message.role === args.role)
@@ -57,22 +74,24 @@ export function extractMessagesFromHtml(html: string, args: ReadMessagesArgs = {
 
 export async function readMessages(page: PageLike, args: ReadMessagesArgs = {}): Promise<ExtractedMessage[]> {
   if (typeof page.evaluate === "function") {
-    const messages = await page.evaluate(() => {
-      const nodes = Array.from(document.querySelectorAll("[data-message-author-role]"));
-      return nodes
-        .map(node => {
-          const role = node.getAttribute("data-message-author-role");
-          if (role !== "user" && role !== "assistant") {
-            return undefined;
-          }
-          return {
-            role,
-            html: node.innerHTML,
-            metadataHtml: (node.closest("[data-testid^='conversation-turn']") as HTMLElement | null)?.outerHTML ?? node.outerHTML
-          };
-        })
-        .filter(Boolean) as Array<{ role: "user" | "assistant"; html: string; metadataHtml?: string }>;
-    });
+    const messages = await withMessageEvaluateTimeout(
+      page.evaluate(() => {
+        const nodes = Array.from(document.querySelectorAll("[data-message-author-role]"));
+        return nodes
+          .map(node => {
+            const role = node.getAttribute("data-message-author-role");
+            if (role !== "user" && role !== "assistant") {
+              return undefined;
+            }
+            return {
+              role,
+              html: node.innerHTML,
+              metadataHtml: (node.closest("[data-testid^='conversation-turn']") as HTMLElement | null)?.outerHTML ?? node.outerHTML
+            };
+          })
+          .filter(Boolean) as Array<{ role: "user" | "assistant"; html: string; metadataHtml?: string }>;
+      }, undefined, { timeoutMs: MESSAGE_EVALUATE_TIMEOUT_MS })
+    );
 
     return messages
       .filter(message => args.role === undefined || message.role === args.role)
@@ -94,16 +113,18 @@ export async function readLatestMessage(
   maxChars?: number
 ): Promise<ExtractedMessage | undefined> {
   if (typeof page.evaluate === "function") {
-    const message = await page.evaluate((wantedRole: MessageRole) => {
-      const nodes = Array.from(document.querySelectorAll(`[data-message-author-role="${wantedRole}"]`));
-      const node = nodes.at(-1);
-      if (node === undefined) return undefined;
-      return {
-        role: wantedRole,
-        html: node.innerHTML,
-        metadataHtml: (node.closest("[data-testid^='conversation-turn']") as HTMLElement | null)?.outerHTML ?? node.outerHTML
-      };
-    }, role).catch(() => undefined);
+    const message = await withMessageEvaluateTimeout(
+      page.evaluate((wantedRole: MessageRole) => {
+        const nodes = Array.from(document.querySelectorAll(`[data-message-author-role="${wantedRole}"]`));
+        const node = nodes.at(-1);
+        if (node === undefined) return undefined;
+        return {
+          role: wantedRole,
+          html: node.innerHTML,
+          metadataHtml: (node.closest("[data-testid^='conversation-turn']") as HTMLElement | null)?.outerHTML ?? node.outerHTML
+        };
+      }, role, { timeoutMs: MESSAGE_EVALUATE_TIMEOUT_MS })
+    ).catch(() => undefined);
 
     if (message !== undefined) {
       const args: ReadMessagesArgs = { role, format };
@@ -124,11 +145,13 @@ export async function readLatestMessageText(
   role: MessageRole = "assistant"
 ): Promise<string | undefined> {
   if (typeof page.evaluate === "function") {
-    return page.evaluate((wantedRole: MessageRole) => {
-      const nodes = Array.from(document.querySelectorAll(`[data-message-author-role="${wantedRole}"]`));
-      const node = nodes.at(-1) as HTMLElement | undefined;
-      return node?.innerText ?? node?.textContent ?? undefined;
-    }, role).catch(() => undefined);
+    return withMessageEvaluateTimeout(
+      page.evaluate((wantedRole: MessageRole) => {
+        const nodes = Array.from(document.querySelectorAll(`[data-message-author-role="${wantedRole}"]`));
+        const node = nodes.at(-1) as HTMLElement | undefined;
+        return node?.innerText ?? node?.textContent ?? undefined;
+      }, role, { timeoutMs: MESSAGE_EVALUATE_TIMEOUT_MS })
+    ).catch(() => undefined);
   }
 
   return readLatestMessage(page, role, "normalized_text")
@@ -141,15 +164,17 @@ export async function readLatestMessageTextSnapshot(
   role: MessageRole
 ): Promise<LatestMessageTextSnapshot> {
   if (typeof page.evaluate === "function") {
-    return page.evaluate((wantedRole: MessageRole) => {
-      const allNodes = Array.from(document.querySelectorAll("[data-message-author-role]"));
-      const roleNodes = allNodes.filter(node => node.getAttribute("data-message-author-role") === wantedRole);
-      const latest = roleNodes.at(-1) as HTMLElement | undefined;
-      const latestText = latest?.innerText ?? latest?.textContent ?? undefined;
-      const snapshot: { latestText?: string; turnCount: number } = { turnCount: allNodes.length };
-      if (latestText !== undefined) snapshot.latestText = latestText;
-      return snapshot;
-    }, role);
+    return withMessageEvaluateTimeout(
+      page.evaluate((wantedRole: MessageRole) => {
+        const allNodes = Array.from(document.querySelectorAll("[data-message-author-role]"));
+        const roleNodes = allNodes.filter(node => node.getAttribute("data-message-author-role") === wantedRole);
+        const latest = roleNodes.at(-1) as HTMLElement | undefined;
+        const latestText = latest?.innerText ?? latest?.textContent ?? undefined;
+        const snapshot: { latestText?: string; turnCount: number } = { turnCount: allNodes.length };
+        if (latestText !== undefined) snapshot.latestText = latestText;
+        return snapshot;
+      }, role, { timeoutMs: MESSAGE_EVALUATE_TIMEOUT_MS })
+    );
   }
 
   const messages = await readMessages(page, { role, format: "normalized_text" });
@@ -178,12 +203,14 @@ export function countMessages(messages: ExtractedMessage[], role?: MessageRole):
 
 export async function countPageMessages(page: PageLike, role?: MessageRole): Promise<number> {
   if (typeof page.evaluate === "function") {
-    return page.evaluate((wantedRole: MessageRole | undefined) => {
-      const selector = wantedRole === undefined
-        ? "[data-message-author-role]"
-        : `[data-message-author-role="${wantedRole}"]`;
-      return document.querySelectorAll(selector).length;
-    }, role);
+    return withMessageEvaluateTimeout(
+      page.evaluate((wantedRole: MessageRole | undefined) => {
+        const selector = wantedRole === undefined
+          ? "[data-message-author-role]"
+          : `[data-message-author-role="${wantedRole}"]`;
+        return document.querySelectorAll(selector).length;
+      }, role, { timeoutMs: MESSAGE_EVALUATE_TIMEOUT_MS })
+    );
   }
 
   return countMessages(await readMessages(page), role);

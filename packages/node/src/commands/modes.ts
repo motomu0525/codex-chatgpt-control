@@ -5,10 +5,12 @@ import { normalizeLabel, normalizeWhitespace } from "../dom/visible-text.js";
 import type { CommandResult, LocatorLike, PageLike, RuntimeEnv, SelectToolArgs, SetModeArgs } from "../types.js";
 import { contextFromPage } from "./context.js";
 import { bootstrap } from "./session.js";
+import { withTimeout } from "./timeouts.js";
 
 const DEFAULT_MODE_EFFORT = "Thinking";
 const CURRENT_MODE_LABELS: string[] = [...localeLabels.modeLabels];
 const MODE_OPENER_LABELS = [...CURRENT_MODE_LABELS.filter(label => label !== "Pro"), ...localeLabels.modeOpenerExtra];
+const SIDEBAR_CLOSE_LABELS = ["サイドバーを閉じる", "Close sidebar"];
 
 export async function setMode(
   env: RuntimeEnv,
@@ -99,6 +101,7 @@ type ModeMenuOpenResult = {
 async function waitForModeMenu(page: PageLike, requested: string[], timeoutMs: number): Promise<ModeMenuOpenResult> {
   const deadline = Date.now() + timeoutMs;
   let modeButtons: string[] = [];
+  let sidebarCloseAttempted = false;
 
   do {
     modeButtons = await visibleModeButtonLabelList(page);
@@ -114,6 +117,12 @@ async function waitForModeMenu(page: PageLike, requested: string[], timeoutMs: n
 
     if (await clickModeOpener(page, modeButtons)) {
       return { opened: true, alreadySelected: [], modeButtons };
+    }
+
+    if (!sidebarCloseAttempted && await clickSidebarCloseButton(page)) {
+      sidebarCloseAttempted = true;
+      await page.waitForTimeout?.(500);
+      continue;
     }
 
     if (Date.now() >= deadline) {
@@ -196,6 +205,34 @@ async function clickFirstUniqueButton(page: PageLike, labels: string[]): Promise
   }
 
   return false;
+}
+
+async function clickSidebarCloseButton(page: PageLike): Promise<boolean> {
+  if (await clickFirstUniqueButton(page, SIDEBAR_CLOSE_LABELS)) {
+    return true;
+  }
+
+  if (typeof page.evaluate !== "function") {
+    return false;
+  }
+
+  return withTimeout(
+    page.evaluate((labels: string[]) => {
+      const normalizedLabels = new Set(labels.map(label => label.replace(/\s+/g, " ").trim().toLowerCase()));
+      const matches = Array.from(document.querySelectorAll("button, [role='button']"))
+        .filter(node => {
+          const element = node as HTMLElement;
+          const ariaLabel = (element.getAttribute("aria-label") ?? "").replace(/\s+/g, " ").trim().toLowerCase();
+          const visibleText = (element.innerText ?? element.textContent ?? "").replace(/\s+/g, " ").trim().toLowerCase();
+          return normalizedLabels.has(ariaLabel) || normalizedLabels.has(visibleText);
+        });
+      if (matches.length !== 1) return false;
+      (matches[0] as HTMLElement).click();
+      return true;
+    }, SIDEBAR_CLOSE_LABELS, { timeoutMs: 1000 }),
+    1000,
+    "Sidebar close DOM fallback timed out."
+  ).catch(() => false);
 }
 
 async function clickModeOpener(page: PageLike, modeButtons: string[]): Promise<boolean> {

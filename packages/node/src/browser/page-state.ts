@@ -55,7 +55,7 @@ export async function readVisibleText(page: PageLike): Promise<string> {
   if (typeof page.evaluate === "function") {
     try {
       return await withTimeout(
-        page.evaluate(() => document.body?.innerText ?? ""),
+        page.evaluate(() => document.body?.innerText ?? "", undefined, { timeoutMs: 1000 }),
         1000,
         "Timed out while reading visible page text."
       );

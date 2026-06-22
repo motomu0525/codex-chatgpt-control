@@ -30,7 +30,7 @@ import type {
 } from "../types.js";
 import { contextFromPage } from "./context.js";
 import { bootstrap } from "./session.js";
-import { localGuardTimeout } from "./timeouts.js";
+import { localGuardTimeout, withTimeout } from "./timeouts.js";
 
 const CODEX_UPLOAD_PERMISSION_FIX = "Codex Settings > Computer Use > Chrome > Permissions > Uploads: set to Always allow, or add chatgpt.com to the allowed upload domains.";
 const CHROME_FILE_URL_PERMISSION_FIX = "Chrome chrome://extensions > Codex extension > Details: enable Allow access to file URLs.";
@@ -505,7 +505,7 @@ async function waitForAttachedFilesReady(
   let lastProcessingText: string | undefined;
 
   while (Date.now() - started < timeoutMs) {
-    const snapshot = await readAttachmentReadiness(page, files).catch(() => undefined);
+    const snapshot = await readAttachmentReadiness(page, files);
     if (snapshot === undefined) {
       return { ready: true };
     }
@@ -539,44 +539,53 @@ async function readAttachmentReadiness(
     return undefined;
   }
 
-  return page.evaluate((fileNames: string[]) => {
-    const visibleText = document.body?.innerText ?? "";
-    const normalize = (value: string) => value.toLocaleLowerCase();
-    const normalizedVisibleText = normalize(visibleText);
-    const files = fileNames.map(name => ({
-      name,
-      visible: normalizedVisibleText.includes(normalize(name))
-    }));
+  const timeoutMs = 3000;
+  return withTimeout(
+    page.evaluate((fileNames: string[]) => {
+      const visibleText = document.body?.innerText ?? "";
+      const normalize = (value: string) => value.toLocaleLowerCase();
+      const normalizedVisibleText = normalize(visibleText);
+      const files = fileNames.map(name => ({
+        name,
+        visible: normalizedVisibleText.includes(normalize(name))
+      }));
 
-    const attachmentSelectors = [
-      "[data-testid*='attachment' i]",
-      "[data-testid*='file' i]",
-      "[aria-label*='attachment' i]",
-      "[aria-label*='upload' i]",
-      "[aria-label*='file' i]",
-      "[class*='attachment' i]",
-      "[class*='upload' i]",
-      "[class*='file' i]",
-      "[role='progressbar']"
-    ].join(", ");
-    const attachmentText = Array.from(document.querySelectorAll(attachmentSelectors))
-      .map(element => [
-        element.textContent ?? "",
-        element.getAttribute("aria-label") ?? "",
-        element.getAttribute("title") ?? ""
-      ].join(" "))
-      .join(" ");
-    const relevantText = attachmentText.length > 0 ? attachmentText : visibleText;
-    const processingMatch = /\b(uploading|processing|attaching|preparing|reading|scanning|analyzing)\b/i.exec(relevantText);
-    const snapshot: AttachmentReadinessSnapshot = {
-      files,
-      processing: processingMatch !== null
-    };
-    if (processingMatch !== null) {
-      snapshot.processingText = relevantText.slice(0, 500);
-    }
-    return snapshot;
-  }, files.map(file => file.name));
+      const attachmentSelectors = [
+        "[data-testid*='attachment' i]",
+        "[data-testid*='file' i]",
+        "[aria-label*='attachment' i]",
+        "[aria-label*='upload' i]",
+        "[aria-label*='file' i]",
+        "[class*='attachment' i]",
+        "[class*='upload' i]",
+        "[class*='file' i]",
+        "[role='progressbar']"
+      ].join(", ");
+      const attachmentText = Array.from(document.querySelectorAll(attachmentSelectors))
+        .map(element => [
+          element.textContent ?? "",
+          element.getAttribute("aria-label") ?? "",
+          element.getAttribute("title") ?? ""
+        ].join(" "))
+        .join(" ");
+      const relevantText = attachmentText.length > 0 ? attachmentText : visibleText;
+      const processingMatch = /\b(uploading|processing|attaching|preparing|reading|scanning|analyzing)\b/i.exec(relevantText);
+      const snapshot: AttachmentReadinessSnapshot = {
+        files,
+        processing: processingMatch !== null
+      };
+      if (processingMatch !== null) {
+        snapshot.processingText = relevantText.slice(0, 500);
+      }
+      return snapshot;
+    }, files.map(file => file.name), { timeoutMs }),
+    timeoutMs,
+    "Attachment readiness check timed out."
+  ).catch(error => ({
+    files: files.map(file => ({ name: file.name, visible: false })),
+    processing: true,
+    processingText: error instanceof Error ? error.message : String(error)
+  }));
 }
 
 async function uploadFiles(page: NonNullable<RuntimeEnv["page"]>, files: AttachedFile[], timeoutMs: number): Promise<void> {
@@ -605,7 +614,7 @@ async function uploadFiles(page: NonNullable<RuntimeEnv["page"]>, files: Attache
     {
       name: "direct-file-input-set",
       run: async () => {
-        await setHiddenFileInput(page, files);
+        await setHiddenFileInput(page, files, timeoutMs);
       }
     }
   ];
@@ -679,13 +688,58 @@ async function clickFileChooserTarget(
   options: { requireVisible?: boolean } = {}
 ): Promise<void> {
   const locator = requiredLocator(page, selector);
-  if (await locatorCount(locator) !== 1) {
+  const targetState = await readCssTargetState(page, locator, selector, localGuardTimeout(timeoutMs, 1000));
+  if (targetState.count !== 1) {
     throw new Error(`Upload target was not uniquely available: ${selector}`);
   }
-  if (options.requireVisible === true && locator.isVisible !== undefined && !await locator.isVisible({ timeoutMs: 1000 })) {
+  if (options.requireVisible === true && !targetState.visible) {
     throw new Error(`Upload target is hidden: ${selector}`);
   }
   await clickFileChooserLocator(page, locator, paths, timeoutMs);
+}
+
+async function readCssTargetState(
+  page: PageLike,
+  locator: LocatorLike,
+  selector: string,
+  timeoutMs: number
+): Promise<{ count: number; visible: boolean }> {
+  if (typeof page.evaluate !== "function") {
+    return readLocatorTargetState(locator, timeoutMs);
+  }
+  const state = await withTimeout(
+    page.evaluate((targetSelector: string) => {
+      const elements = Array.from(document.querySelectorAll(targetSelector));
+      const visible = elements.some(element => {
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return style.display !== "none"
+          && style.visibility !== "hidden"
+          && rect.width > 0
+          && rect.height > 0;
+      });
+      return { count: elements.length, visible };
+    }, selector, { timeoutMs }),
+    timeoutMs,
+    `Upload target DOM check timed out: ${selector}`
+  ).catch(() => undefined);
+  if (typeof state?.count !== "number" || typeof state.visible !== "boolean") {
+    return readLocatorTargetState(locator, timeoutMs);
+  }
+  return state;
+}
+
+async function readLocatorTargetState(locator: LocatorLike, timeoutMs: number): Promise<{ count: number; visible: boolean }> {
+  const count = await locatorCountWithTimeout(locator, timeoutMs, "upload_target_count_timeout");
+  if (count !== 1 || typeof locator.isVisible !== "function") {
+    return { count, visible: count === 1 };
+  }
+  const visible = await withTimeout(
+    locator.isVisible({ timeoutMs }),
+    timeoutMs,
+    "Upload target visibility check timed out."
+  ).catch(() => false);
+  return { count, visible };
 }
 
 async function clickFileChooserLocator(
@@ -716,7 +770,11 @@ async function clickFileChooserLocator(
   const chooser = await chooserPromise;
   await validateChooserMultiplicity(chooser, paths);
   try {
-    await chooser.setFiles(paths);
+    await withTimeout(
+      Promise.resolve(chooser.setFiles(paths)),
+      timeoutMs,
+      `fileChooser.setFiles timed out after ${timeoutMs} ms.`
+    );
   } catch (error) {
     throw new Error(`fileChooser.setFiles failed. ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -753,10 +811,7 @@ function isFileChooserLike(value: unknown): value is FileChooserLike {
 }
 
 async function locatorCount(locator: LocatorLike | undefined): Promise<number> {
-  if (locator === undefined || typeof locator.count !== "function") {
-    return 0;
-  }
-  return locator.count();
+  return locatorCountWithTimeout(locator, 5000, "upload_locator_count_timeout");
 }
 
 export async function downloadLatestFile(
@@ -821,16 +876,20 @@ export async function downloadLatestFile(
   }
 }
 
-async function setHiddenFileInput(page: RuntimeEnv["page"], files: AttachedFile[]): Promise<void> {
+async function setHiddenFileInput(page: RuntimeEnv["page"], files: AttachedFile[], timeoutMs: number): Promise<void> {
   if (page === undefined) {
     throw new Error("No active page is available for file upload.");
   }
   const input = requiredLocator(page, cssSelectors.hiddenFileInputs).last?.() ?? requiredLocator(page, cssSelectors.hiddenFileInputs);
   if (typeof input.setInputFiles !== "function") {
-    await setFilesViaDomDataTransfer(page, files);
+    await setFilesViaDomDataTransfer(page, files, timeoutMs);
     return;
   }
-  await input.setInputFiles(files.map(file => file.path));
+  await withTimeout(
+    input.setInputFiles(files.map(file => file.path)),
+    localGuardTimeout(timeoutMs, 10000),
+    "Hidden file input setInputFiles timed out."
+  );
 }
 
 async function ensurePage(env: RuntimeEnv): Promise<CommandResult<unknown>> {
@@ -840,7 +899,7 @@ async function ensurePage(env: RuntimeEnv): Promise<CommandResult<unknown>> {
   return bootstrap(env, { preferExistingTab: true });
 }
 
-async function setFilesViaDomDataTransfer(page: NonNullable<RuntimeEnv["page"]>, files: AttachedFile[]): Promise<void> {
+async function setFilesViaDomDataTransfer(page: NonNullable<RuntimeEnv["page"]>, files: AttachedFile[], timeoutMs: number): Promise<void> {
   const totalBytes = files.reduce((sum, file) => sum + file.bytes, 0);
   const maxInlineBytes = 25 * 1024 * 1024;
   if (totalBytes > maxInlineBytes) {
@@ -876,7 +935,8 @@ async function setFilesViaDomDataTransfer(page: NonNullable<RuntimeEnv["page"]>,
       input.dispatchEvent(new Event("input", { bubbles: true }));
       input.dispatchEvent(new Event("change", { bubbles: true }));
     },
-    payload
+    payload,
+    { timeoutMs: localGuardTimeout(timeoutMs, 10000) }
   );
 }
 

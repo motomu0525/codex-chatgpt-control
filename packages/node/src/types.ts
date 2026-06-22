@@ -782,7 +782,11 @@ export type PageLike = {
   };
   waitForTimeout?: (ms: number) => Promise<void>;
   waitForEvent?: (event: string, optionsOrCallback?: WaitForEventOptions | unknown) => Promise<unknown>;
-  evaluate?: <T, A = unknown>(fn: (arg: A) => T | Promise<T>, arg?: A) => Promise<T>;
+  evaluate?: <T, A = unknown>(
+    fn: (arg: A) => T | Promise<T>,
+    arg?: A,
+    options?: { timeoutMs?: number }
+  ) => Promise<T>;
   content?: () => Promise<string>;
   close?: () => Promise<void>;
   capabilities?: {

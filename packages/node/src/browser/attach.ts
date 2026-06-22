@@ -226,6 +226,16 @@ function normalizeExplicitExistingTabPolicy(args: BootstrapArgs): ExistingTabPol
 }
 
 async function selectExistingTab(browser: BrowserLike, policy: ExistingTabPolicy): Promise<ExistingTabSelectionOutcome> {
+  if (policy.target?.type === "tabId" && typeof browser.tabs?.get === "function") {
+    const tab = await Promise.resolve(browser.tabs.get.call(browser.tabs, policy.target.tabId)).catch(() => undefined);
+    if (tab !== undefined) {
+      const normalized = normalizePage(tab);
+      if (await pageMatchesExistingTarget(normalized, policy)) {
+        return { page: normalized };
+      }
+    }
+  }
+
   const userMatch = await selectExistingUserTab(browser, policy, shouldCollectExistingTabDiagnostics(policy));
   if (userMatch.page !== undefined) {
     return userMatch;
@@ -235,16 +245,6 @@ async function selectExistingTab(browser: BrowserLike, policy: ExistingTabPolicy
     const selected = await Promise.resolve(browser.tabs.selected.call(browser.tabs)).catch(() => undefined);
     if (selected !== undefined) {
       const normalized = normalizePage(selected);
-      if (await pageMatchesExistingTarget(normalized, policy)) {
-        return { page: normalized };
-      }
-    }
-  }
-
-  if (policy.target?.type === "tabId" && typeof browser.tabs?.get === "function") {
-    const tab = await Promise.resolve(browser.tabs.get.call(browser.tabs, policy.target.tabId)).catch(() => undefined);
-    if (tab !== undefined) {
-      const normalized = normalizePage(tab);
       if (await pageMatchesExistingTarget(normalized, policy)) {
         return { page: normalized };
       }
