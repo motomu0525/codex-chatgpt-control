@@ -16,6 +16,7 @@ import type {
   WaitAndReadArgs
 } from "../types.js";
 import { normalizePromptForHash } from "../dom/visible-text.js";
+import { validateProReviewCompletionContract } from "../pro-review/completion-contract.js";
 import { appendProReviewRunMarker } from "../pro-review/run-marker.js";
 
 const DEFAULT_FORMAT: ResponseFormat = "markdown";
@@ -224,7 +225,7 @@ export async function runProReview(
     ...(runId !== undefined ? { runId } : {})
   };
 
-  const result = options.submit
+  const rawResult = options.submit
     ? await client.proReview.submitAndRead({
       ...common,
       autoSubmit: true,
@@ -234,6 +235,7 @@ export async function runProReview(
       ...common,
       autoSubmit: false
     });
+  const result = enforceProReviewCompletionContract(rawResult, options.submit);
 
   if (options.outputPath !== undefined) {
     const outputMetaPath = await writeOutputFiles(options.outputPath, result, runOptions, reviewPrompt);
@@ -346,6 +348,40 @@ function responseArgs(options: ProReviewCliOptions): WaitAndReadArgs {
     timeoutMs: options.timeoutMs,
     stableMs: options.stableMs,
     ...(options.maxChars !== undefined ? { maxChars: options.maxChars } : {})
+  };
+}
+
+function enforceProReviewCompletionContract(
+  result: CommandResult<unknown>,
+  submit: boolean
+): CommandResult<unknown> {
+  if (!submit || !result.ok) {
+    return result;
+  }
+
+  const text = textFromData(result.data);
+  const validation = text === undefined
+    ? {
+      ok: false as const,
+      code: "answer_text_missing",
+      message: "Pro review did not return answer text for completion validation."
+    }
+    : validateProReviewCompletionContract(text);
+  if (validation.ok) {
+    return result;
+  }
+
+  return {
+    ...result,
+    ok: false,
+    status: "blocked",
+    warnings: [...result.warnings, validation.message],
+    blocker: {
+      kind: "verification_policy",
+      code: `pro_review_completion_${validation.code}`,
+      message: validation.message,
+      resumable: false
+    }
   };
 }
 
@@ -559,7 +595,7 @@ async function outputMetaForFile(
         returnedAt: null,
         turnId: null,
         attempts: [],
-        blocker: "No completed answer text is available for return prompt preparation."
+        blocker: result.blocker?.message ?? "No completed answer text is available for return prompt preparation."
       },
     context: result.context,
     warnings: result.warnings,

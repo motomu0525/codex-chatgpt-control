@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
 import { describe, expect, it } from "vitest";
-import { attachFiles, downloadLatestFile, preflightFiles, validateAttachPaths } from "../../src/commands/files.js";
+import { attachFiles, downloadLatestFile, preflightFiles, validateAttachPaths, verifyAttachedFiles } from "../../src/commands/files.js";
 import type { LocatorLike, PageLike } from "../../src/types.js";
 
 describe("preflightFiles", () => {
@@ -472,6 +472,46 @@ describe("attachFiles", () => {
     expect(result.blocker?.remediation?.map(step => step.instruction).join(" ")).toContain("Allow access to file URLs");
     expect(result.blocker?.visibleText).toContain("fileChooser.setFiles failed");
     expect(result.blocker?.visibleText).toContain("Not allowed");
+  });
+});
+
+describe("verifyAttachedFiles", () => {
+  it("blocks duplicate visible attachments with the same file name", async () => {
+    const page: PageLike = {
+      evaluate: async <T, A = unknown>(fn: (arg: A) => T | Promise<T>, arg?: A): Promise<T> => {
+        const previousDocument = globalThis.document;
+        try {
+          globalThis.document = {
+            querySelectorAll: () => [
+              {
+                getAttribute: (name: string) => name === "aria-label" ? "review.zip" : null,
+                innerText: "",
+                textContent: ""
+              },
+              {
+                getAttribute: (name: string) => name === "aria-label" ? "review.zip" : null,
+                innerText: "",
+                textContent: ""
+              }
+            ]
+          } as unknown as Document;
+          return await fn(arg as A);
+        } finally {
+          globalThis.document = previousDocument;
+        }
+      },
+      title: async () => "ChatGPT",
+      url: async () => "https://chatgpt.com/"
+    };
+
+    const result = await verifyAttachedFiles({ page }, { expectedName: "review.zip" });
+
+    expect(result.ok).toBe(false);
+    expect(result.blocker).toMatchObject({
+      kind: "selector_drift",
+      code: "attachment_not_uniquely_verified"
+    });
+    expect(result.blocker?.candidates).toEqual([{ label: "review.zip" }, { label: "review.zip" }]);
   });
 });
 

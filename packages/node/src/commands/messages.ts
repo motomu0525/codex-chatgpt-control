@@ -194,22 +194,14 @@ export async function submitMessage(
     const startedAt = Date.now();
     if (args.submitMode === "buttonOnly") {
       const target = sendButton(page);
-      try {
-        if (typeof target.click !== "function") {
-          throw new Error("Send button locator does not expose click().");
-        }
-        await withTimeout(
-          target.click({ timeoutMs: 10000 }),
-          12000,
-          "Timed out clicking send button."
-        );
-      } catch {
-        const clickedByLocator = await clickSendButtonByLocatorEvaluate(target).catch(() => false);
-        const clickedByDom = clickedByLocator ? true : await clickUniqueSendButtonByDom(page).catch(() => false);
-        if (!clickedByDom) {
-          throw new Error("Send button click failed and submitMode=buttonOnly forbids Enter fallback.");
-        }
+      if (typeof target.click !== "function") {
+        throw new Error("Send button locator does not expose click().");
       }
+      await withTimeout(
+        target.click({ timeoutMs: 10000 }),
+        12000,
+        "Timed out clicking send button."
+      );
     } else {
       const ready = await waitForSendButtonReady(page, timeoutMs);
       if (!ready.ready) {
@@ -343,47 +335,6 @@ async function assertSubmitPreconditions(
   }
 
   return undefined;
-}
-
-async function clickSendButtonByLocatorEvaluate(locator: ReturnType<typeof sendButton>): Promise<boolean> {
-  if (typeof locator.evaluate !== "function") {
-    return false;
-  }
-  const count = await locator.count?.().catch(() => undefined);
-  if (count !== undefined && count !== 1) {
-    return false;
-  }
-  return withTimeout(locator.evaluate(element => {
-    const button = element as HTMLButtonElement;
-    if (button.disabled || button.getAttribute("aria-disabled") === "true") {
-      return false;
-    }
-    button.click();
-    return true;
-  }), 5000, "Timed out clicking send button by locator evaluate.");
-}
-
-async function clickUniqueSendButtonByDom(page: PageLike): Promise<boolean> {
-  if (typeof page.evaluate !== "function") {
-    return false;
-  }
-  return withTimeout(page.evaluate(() => {
-    const buttons = Array.from(document.querySelectorAll("button, [role='button']"))
-      .filter(node => {
-        const element = node as HTMLElement;
-        const label = `${element.getAttribute("aria-label") ?? ""} ${element.innerText ?? ""} ${element.textContent ?? ""}`;
-        return /send prompt|send message|\bsend\b|送信/i.test(label);
-      });
-    if (buttons.length !== 1) {
-      return false;
-    }
-    const button = buttons[0] as HTMLButtonElement;
-    if (button.disabled || button.getAttribute("aria-disabled") === "true") {
-      return false;
-    }
-    button.click();
-    return true;
-  }), 5000, "Timed out clicking unique send button by DOM.");
 }
 
 async function waitForSendButtonReady(

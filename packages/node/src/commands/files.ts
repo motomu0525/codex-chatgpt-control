@@ -253,7 +253,7 @@ export async function verifyAttachedFiles(
 
   try {
     const visibleAttachments = await readVisibleAttachmentLabels(page);
-    const normalizedVisibleAttachments = Array.from(new Set(visibleAttachments.map(normalizeAttachmentLabel)));
+    const normalizedVisibleAttachments = compactVisibleAttachmentLabels(visibleAttachments);
     const expectedName = normalizeAttachmentComparable(args.expectedName);
     const expectedBytes = args.expectedBytes ?? (args.expectedPath === undefined ? undefined : (await stat(args.expectedPath)).size);
     const expectedSha256 = args.expectedSha256 ?? (args.expectedPath === undefined ? undefined : await digestFile(args.expectedPath));
@@ -453,13 +453,37 @@ async function readVisibleAttachmentLabels(page: PageLike): Promise<string[]> {
         );
       })
       .filter(label => label.length > 0 && looksLikeAttachment(label));
-    return Array.from(new Set(labels));
+    return labels;
   }).catch(() => []);
 }
 
 function normalizeAttachmentLabel(label: string): string {
   const match = /[^\s:：\\/]+?\.(?:zip|txt|md|pdf|docx?|xlsx?|csv|json|png|jpe?g|webp)\b/i.exec(label);
   return match?.[0] ?? label;
+}
+
+function compactVisibleAttachmentLabels(labels: string[]): string[] {
+  const groups = new Map<string, { display: string; primary: number; deleteAffordance: number }>();
+  for (const raw of labels) {
+    const display = normalizeAttachmentLabel(raw);
+    const key = normalizeAttachmentComparable(display);
+    const group = groups.get(key) ?? { display, primary: 0, deleteAffordance: 0 };
+    if (isAttachmentDeleteAffordance(raw, display)) {
+      group.deleteAffordance += 1;
+    } else {
+      group.primary += 1;
+    }
+    groups.set(key, group);
+  }
+
+  return Array.from(groups.values()).flatMap(group => {
+    const count = group.deleteAffordance > 0 ? group.deleteAffordance : group.primary;
+    return Array.from({ length: count }, () => group.display);
+  });
+}
+
+function isAttachmentDeleteAffordance(rawLabel: string, normalizedLabel: string): boolean {
+  return rawLabel !== normalizedLabel && /削除|delete|remove/i.test(rawLabel);
 }
 
 function normalizeAttachmentComparable(label: string): string {

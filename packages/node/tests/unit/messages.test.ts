@@ -100,7 +100,7 @@ describe("extractMessagesFromHtml", () => {
     expect(submittedUserTurnMatches(renderedTurn, rawPrompt)).toBe(true);
   });
 
-  it("submits with a bounded button click and no Enter fallback in buttonOnly mode", async () => {
+  it("submits with a bounded button click and no fallback in buttonOnly mode", async () => {
     let clickOptions: unknown;
     let pressed = false;
     const page: PageLike = {
@@ -126,12 +126,12 @@ describe("extractMessagesFromHtml", () => {
     });
 
     expect(result.ok).toBe(false);
-    expect(result.error?.message).toContain("buttonOnly forbids Enter fallback");
+    expect(result.error?.message).toContain("click failed");
     expect(clickOptions).toEqual({ timeoutMs: 10000 });
     expect(pressed).toBe(false);
   });
 
-  it("uses a unique DOM send-button click fallback in buttonOnly mode", async () => {
+  it("does not use a DOM send-button fallback in buttonOnly mode", async () => {
     let submitted = false;
     const page: PageLike = {
       locator: () => ({
@@ -181,9 +181,9 @@ describe("extractMessagesFromHtml", () => {
       timeoutMs: 10
     });
 
-    expect(result.ok).toBe(true);
-    expect(submitted).toBe(true);
-    expect(result.data?.submitted).toBe(true);
+    expect(result.ok).toBe(false);
+    expect(result.error?.message).toContain("locator click failed");
+    expect(submitted).toBe(false);
   });
 
   it("blocks submit immediately when the preflight composer hash does not match", async () => {

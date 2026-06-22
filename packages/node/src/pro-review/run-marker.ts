@@ -25,10 +25,22 @@ export function renderProReviewRunMarker(marker: ProReviewRunMarker): string {
 }
 
 export function appendProReviewRunMarker(prompt: string, marker: ProReviewRunMarker): string {
-  if (parseProReviewRunMarker(prompt)?.runId === marker.runId) {
+  const existing = parseProReviewRunMarker(prompt);
+  if (existing?.runId === marker.runId) {
+    if (!proReviewRunMarkersEqual(existing, marker)) {
+      throw new Error(`Existing Pro review run marker "${marker.runId}" does not match the requested prompt or ZIP hash.`);
+    }
     return prompt;
   }
   return `${prompt.replace(/(?:\r?\n)+$/, "")}\n\n${renderProReviewRunMarker(marker)}\n`;
+}
+
+function proReviewRunMarkersEqual(left: ProReviewRunMarker, right: ProReviewRunMarker): boolean {
+  return left.runId === right.runId
+    && left.promptSha256 === right.promptSha256
+    && left.zipSha256 === right.zipSha256
+    && left.zipName === right.zipName
+    && left.zipBytes === right.zipBytes;
 }
 
 export function parseProReviewRunMarker(text: string): ProReviewRunMarker | undefined {

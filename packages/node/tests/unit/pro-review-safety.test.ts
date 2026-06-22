@@ -282,6 +282,43 @@ describe("ChatGPT Pro review safety primitives", () => {
     });
   });
 
+  it("deduplicates repeated primary labels when one delete affordance is visible", async () => {
+    const result = await verifyAttachedFiles({
+      page: documentPage([
+        node({ label: "review-pack.zip" }),
+        node({ label: "review-pack.zip" }),
+        node({ label: "ファイル 1 を削除：review-pack.zip" })
+      ])
+    }, {
+      expectedName: "review-pack.zip"
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.data).toMatchObject({
+      verified: true,
+      visibleAttachments: ["review-pack.zip"]
+    });
+  });
+
+  it("blocks duplicate delete affordances for the same visible attachment name", async () => {
+    const result = await verifyAttachedFiles({
+      page: documentPage([
+        node({ label: "review-pack.zip" }),
+        node({ label: "ファイル 1 を削除：review-pack.zip" }),
+        node({ label: "ファイル 2 を削除：review-pack.zip" })
+      ])
+    }, {
+      expectedName: "review-pack.zip"
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.blocker).toMatchObject({
+      kind: "selector_drift",
+      code: "attachment_not_uniquely_verified",
+      candidates: [{ label: "review-pack.zip" }, { label: "review-pack.zip" }]
+    });
+  });
+
   it("matches attachment names despite invisible label characters", async () => {
     const result = await verifyAttachedFiles({
       page: documentPage([

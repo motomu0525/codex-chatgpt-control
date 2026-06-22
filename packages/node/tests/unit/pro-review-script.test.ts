@@ -13,6 +13,9 @@ import {
 import { normalizePromptForHash } from "../../src/dom/visible-text.js";
 import { parseProReviewRunMarker } from "../../src/pro-review/run-marker.js";
 
+const COMPLETE_ANSWER = "answer text\nPRO_REVIEW_COMPLETE";
+const FENCED_COMPLETE_ANSWER = "answer before\n````\ninside answer\n````\nafter\nPRO_REVIEW_COMPLETE";
+
 describe("pro-review entrypoint", () => {
   it("parses dry-run arguments by default", () => {
     expect(parseProReviewCliArgs([
@@ -107,7 +110,7 @@ describe("pro-review entrypoint", () => {
     const outputMetaPath = (result.context as Record<string, unknown>).outputMetaPath;
     expect(typeof outputPath).toBe("string");
     expect(typeof outputMetaPath).toBe("string");
-    expect(await readFile(outputPath as string, "utf8")).toBe("answer text");
+    expect(await readFile(outputPath as string, "utf8")).toBe(COMPLETE_ANSWER);
     const meta = JSON.parse(await readFile(outputMetaPath as string, "utf8")) as Record<string, unknown>;
     expect(meta).toMatchObject({
       schemaVersion: 2,
@@ -132,7 +135,7 @@ describe("pro-review entrypoint", () => {
       },
       answer: {
         path: outputPath,
-        bytes: "answer text".length,
+        bytes: COMPLETE_ANSWER.length,
         sha256: expect.any(String)
       },
       return: {
@@ -193,6 +196,42 @@ describe("pro-review entrypoint", () => {
     expect(returnPrompt).toMatch(/`````text[\s\S]*````\ninside answer\n````[\s\S]*`````/);
   });
 
+  it("blocks return prompt preparation when the recovered answer lacks completion marker", async () => {
+    const calls: string[] = [];
+    const client = fakeClient(calls);
+    const dir = await mkdtemp(join(tmpdir(), "pro-review-incomplete-output-"));
+    const zipPath = join(dir, "review.zip");
+    await writeFile(zipPath, Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x00]));
+
+    const result = await runProReview(client, {
+      zipPath,
+      prompt: "Review now.",
+      submit: true,
+      outputPath: join(dir, "answer.md"),
+      runId: "run-missing-completion",
+      codexThreadId: "thread-123",
+      format: "markdown",
+      timeoutMs: 120000,
+      stableMs: 1500
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.status).toBe("blocked");
+    expect(result.blocker).toMatchObject({
+      kind: "verification_policy",
+      code: "pro_review_completion_completion_marker_missing"
+    });
+    const meta = JSON.parse(await readFile((result.context as Record<string, unknown>).outputMetaPath as string, "utf8")) as Record<string, unknown>;
+    expect(meta).toMatchObject({
+      ok: false,
+      status: "blocked",
+      return: {
+        state: "blocked",
+        blocker: expect.stringContaining("PRO_REVIEW_COMPLETE")
+      }
+    });
+  });
+
   it("refuses to overwrite an existing run ledger for the same run id", async () => {
     const calls: string[] = [];
     const client = fakeClient(calls);
@@ -233,9 +272,12 @@ function fakeClient(calls: string[]): ProReviewCliClient {
           expect(args.response?.maxChars).toBe(2000);
         }
         if (args.runId === "run-fenced") {
-          return ok({ text: "answer before\n````\ninside answer\n````\nafter", source: "clipboard", format: "markdown" });
+          return ok({ text: FENCED_COMPLETE_ANSWER, source: "clipboard", format: "markdown" });
         }
-        return ok({ text: "answer text", source: "clipboard", format: "markdown" });
+        if (args.runId === "run-missing-completion") {
+          return ok({ text: "answer text", source: "clipboard", format: "markdown" });
+        }
+        return ok({ text: COMPLETE_ANSWER, source: "clipboard", format: "markdown" });
       }
     }
   };

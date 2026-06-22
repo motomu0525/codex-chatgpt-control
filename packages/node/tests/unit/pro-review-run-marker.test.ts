@@ -32,4 +32,18 @@ describe("Pro review run marker", () => {
     expect(once).toContain("## Codex ChatGPT Pro Review Run");
     expect(once).toContain("runId: run-123");
   });
+
+  it("rejects reusing a run id with different marker hashes", () => {
+    const marker = {
+      runId: "run-123",
+      promptSha256: "p".repeat(64),
+      zipSha256: "z".repeat(64)
+    };
+    const prompt = appendProReviewRunMarker("Review this.", marker);
+
+    expect(() => appendProReviewRunMarker(prompt, {
+      ...marker,
+      zipSha256: "a".repeat(64)
+    })).toThrow(/does not match/);
+  });
 });
