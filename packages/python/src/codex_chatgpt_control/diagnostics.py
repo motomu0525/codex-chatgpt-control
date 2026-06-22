@@ -55,6 +55,13 @@ BLOCKER_PROFILES: dict[str, dict[str, Any]] = {
         "userActionRequired": True,
         "retryReason": "Retry only after the user approves the exact bounded action.",
     },
+    "verification_policy": {
+        "title": "Verification policy",
+        "category": "runtime",
+        "severity": "blocked",
+        "userActionRequired": False,
+        "retryReason": "Do not retry blindly; inspect the verification diagnostics and retry only after verified UI evidence is available.",
+    },
     "selector_drift": {
         "title": "Selector drift",
         "category": "ui_drift",
@@ -113,7 +120,15 @@ BLOCKER_PROFILES: dict[str, dict[str, Any]] = {
     },
 }
 
-NEVER_AUTO_RESUME = {"captcha", "login_required", "rate_limit", "selector_drift", "artifact_selector_drift", "unknown"}
+NEVER_AUTO_RESUME = {
+    "captcha",
+    "login_required",
+    "rate_limit",
+    "verification_policy",
+    "selector_drift",
+    "artifact_selector_drift",
+    "unknown",
+}
 
 
 def explain_blocker(
